@@ -1,0 +1,46 @@
+# CONSTRAINT: Docker Hub official image only — do NOT pull ghcr.io/agentic-community/mcp-gateway-registry
+FROM python:3.11-slim
+
+# M1: the registry is a FastAPI/uvicorn app; we run it directly, skipping nginx.
+# M5: dependencies are in pyproject.toml (no requirements.txt at repo root).
+#     The git-based cisco-ai-a2a-scanner dep is stripped below (it installs only
+#     a CLI tool — no Python module imports — so the app starts without it).
+
+WORKDIR /app
+
+# CONSTRAINT: pip only — no apt, no apt-get, no apk, no yum
+# Install uv (a fast pip-compatible installer) via pip, which is allowed.
+RUN pip install --no-cache-dir uv
+
+# Copy source from the cloned submodule
+COPY mcp-gateway-registry/ .
+
+# M5: strip the git-based dependency that requires git (not available in slim image).
+#     This package only installs a CLI binary; disabling security scanning covers
+#     the code paths that call it (SECURITY_SCAN_ENABLED=false in compose env).
+RUN sed -i '/cisco-ai-a2a-scanner @ git+/d' pyproject.toml
+
+# Install torch CPU-only first (avoids downloading the full GPU build).
+# Must run before the main install so uv does not resolve a conflicting version.
+RUN uv pip install --system --extra-index-url https://download.pytorch.org/whl/cpu \
+    "torch>=2.0.0"
+
+# Install all remaining dependencies from pyproject.toml.
+# uv resolves from pyproject.toml [project.dependencies].
+RUN uv pip install --system -e .
+
+# Directories required by the gateway in file/registry-only storage mode.
+# M6: models are read from /app/registry/models/<model-name>, not /app/models/.
+RUN mkdir -p /app/registry/models /app/registry/servers /app/registry/agents \
+             /app/logs /app/data
+
+EXPOSE 7860
+
+# CONSTRAINT: Python urllib healthcheck — no curl, no nc
+# M6: /health returns {"status": "healthy"} — any 200 response is sufficient here.
+HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=120s \
+  CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health').read()" || exit 1
+
+# M1: actual entrypoint — uvicorn starts the FastAPI app directly (no nginx layer).
+# DEPLOYMENT_MODE=registry-only skips nginx dynamic location block generation.
+CMD ["uvicorn", "registry.main:app", "--host", "0.0.0.0", "--port", "7860"]

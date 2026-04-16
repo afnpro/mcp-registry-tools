@@ -1,0 +1,130 @@
+version: "3.9"
+
+networks:
+  mcp-net:
+    driver: bridge
+
+volumes:
+  gateway-data:
+  sync-state:
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # mcp-gateway — mcp-gateway-registry built from source
+  # Source: github.com/agentic-community/mcp-gateway-registry (git submodule)
+  # Custom Dockerfile: Dockerfile.gateway (python:3.11-slim, pip/uv only)
+  # NEVER pull ghcr.io/agentic-community/mcp-gateway-registry — blocked registry
+  #
+  # M1: CMD is uvicorn registry.main:app — no nginx layer
+  # M3: no SRE_GATEWAY_AUTH_TOKEN/REGISTRY_STATIC_TOKEN_AUTH_ENABLED needed;
+  #     auth is handled via X-Auth-Method: network-trusted headers from clients
+  # M4: DEPLOYMENT_MODE=registry-only is valid — skips nginx config generation
+  # M6: model path inside container is /app/registry/models/<name>
+  # ─────────────────────────────────────────────────────────────────────────
+  mcp-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    container_name: mcp-gateway
+    restart: unless-stopped
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - AUTH_PROVIDER=${AUTH_PROVIDER:-static}
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-file}
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
+      - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-registry-only}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Embeddings — M6: EMBEDDINGS_MODEL_NAME controls the subdir under /app/registry/models/
+      - EMBEDDINGS_MODEL_NAME=${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}
+      - EMBEDDINGS_MODEL_DIMENSIONS=${EMBEDDINGS_MODEL_DIMENSIONS:-384}
+      - EMBEDDINGS_PROVIDER=${EMBEDDINGS_PROVIDER:-sentence-transformers}
+      # Disable security scanning — the cisco-ai-a2a-scanner CLI is not installed
+      - SECURITY_SCAN_ENABLED=false
+      - SECURITY_SCAN_ON_REGISTRATION=false
+      - SECURITY_BLOCK_UNSAFE_SERVERS=false
+    volumes:
+      - gateway-data:/app/registry
+      # M6: bind mount matches the path the gateway reads from (/app/registry/models).
+      # bootstrap.sh downloads the model to ${HOME}/mcp-gateway/models on the host.
+      # This mount makes that model visible inside the container.
+      - ${HOME}/mcp-gateway/models:/app/registry/models
+    ports:
+      - "7860:7860"
+    networks:
+      - mcp-net
+    # CONSTRAINT: Python urllib — no curl, no nc
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:7860/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # sync-worker — polls MCP Registry and syncs to gateway
+  # ─────────────────────────────────────────────────────────────────────────
+  sync-worker:
+    build:
+      context: ./sync-worker
+      dockerfile: Dockerfile
+    container_name: sync-worker
+    restart: unless-stopped
+    environment:
+      - MCP_REGISTRY_BASE_URL=${MCP_REGISTRY_BASE_URL}
+      - MCP_REGISTRY_API_VERSION=${MCP_REGISTRY_API_VERSION}
+      - MCP_REGISTRY_PAGE_SIZE=${MCP_REGISTRY_PAGE_SIZE}
+      - MCP_REGISTRY_REQUEST_TIMEOUT=${MCP_REGISTRY_REQUEST_TIMEOUT}
+      - GATEWAY_BASE_URL=${GATEWAY_BASE_URL}
+      - GATEWAY_API_TOKEN=${GATEWAY_API_TOKEN}
+      - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS}
+      - SYNC_STATE_FILE=${SYNC_STATE_FILE}
+      - LOG_LEVEL=${LOG_LEVEL}
+    volumes:
+      - sync-state:/app/data
+    networks:
+      - mcp-net
+    depends_on:
+      mcp-gateway:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # github-mcp — mock corporate GitHub MCP server
+  # ─────────────────────────────────────────────────────────────────────────
+  github-mcp:
+    build:
+      context: ./mock-servers/github-mcp
+      dockerfile: Dockerfile
+    container_name: github-mcp
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    networks:
+      - mcp-net
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # jira-mcp — mock corporate Jira MCP server
+  # ─────────────────────────────────────────────────────────────────────────
+  jira-mcp:
+    build:
+      context: ./mock-servers/jira-mcp
+      dockerfile: Dockerfile
+    container_name: jira-mcp
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    networks:
+      - mcp-net
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 20s
+      timeout: 5s
+      retries: 3

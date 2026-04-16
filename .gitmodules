@@ -1,0 +1,3 @@
+[submodule "mcp-gateway-registry"]
+	path = mcp-gateway-registry
+	url = https://github.com/agentic-community/mcp-gateway-registry.git
