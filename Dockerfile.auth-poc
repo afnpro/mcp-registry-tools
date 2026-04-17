@@ -44,6 +44,11 @@ COPY auth_server_providers_poc.yml ./auth_server/oauth2_providers.yml
 # Install the full gateway package so auth_server registry.* imports resolve
 RUN uv pip install --system --no-cache -e .
 
+# Dev-login wrapper: rename original server.py, inject wrapper as new server.py.
+# uvicorn still runs `server:app` — the wrapper loads the original and adds /dev/login.
+RUN mv /app/auth_server/server.py /app/auth_server/server_original.py
+COPY auth_server_dev_wrapper.py /app/auth_server/server.py
+
 WORKDIR /app/auth_server
 
 EXPOSE 8888
