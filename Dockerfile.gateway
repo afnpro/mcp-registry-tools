@@ -1,3 +1,18 @@
+# ── Stage 1: build the React frontend ────────────────────────────────────────
+# node:20-slim is a Docker Hub official image — no constraint violation.
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /frontend
+
+# Install dependencies first (layer-cached until package.json changes).
+COPY mcp-gateway-registry/frontend/package*.json ./
+RUN npm ci --prefer-offline
+
+# Build production bundle.
+COPY mcp-gateway-registry/frontend/ ./
+RUN npm run build
+
+# ── Stage 2: Python runtime ───────────────────────────────────────────────────
 # CONSTRAINT: Docker Hub official image only — do NOT pull ghcr.io/agentic-community/mcp-gateway-registry
 FROM python:3.11-slim
 
@@ -14,6 +29,11 @@ RUN pip install --no-cache-dir uv
 
 # Copy source from the cloned submodule
 COPY mcp-gateway-registry/ .
+
+# Inject the pre-built React bundle.
+# FastAPI mounts /app/frontend/build as /static when it exists — this makes
+# the web UI available at http://localhost:7860/ without nginx.
+COPY --from=frontend-builder /frontend/build ./frontend/build
 
 # M5: strip the git-based dependency that requires git (not available in slim image).
 #     This package only installs a CLI binary; disabling security scanning covers

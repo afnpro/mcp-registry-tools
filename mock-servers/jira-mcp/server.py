@@ -1,8 +1,13 @@
-"""Mock MCP Server: Jira — simulates Jira tools for semantic discovery testing."""
+"""Mock MCP Server: Jira — simulates Jira tools for semantic discovery testing.
+
+Serves MCP over streamable HTTP transport at /mcp (MCP 2025-03-26 spec).
+Gateway crawls tools/list via POST /mcp during server registration.
+"""
 import asyncio
+import contextlib
 import uvicorn
 from fastmcp import FastMCP
-from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
 from starlette.responses import JSONResponse
@@ -58,28 +63,29 @@ async def health(request):
     return JSONResponse({"status": "healthy"})
 
 
-async def serve():
-    sse = SseServerTransport("/messages/")
+session_manager = StreamableHTTPSessionManager(
+    app=mcp._mcp_server,
+    stateless=True,
+)
 
-    async def handle_sse(request):
-        async with sse.connect_sse(
-            request.scope, request.receive, request._send
-        ) as streams:
-            await mcp._mcp_server.run(
-                streams[0], streams[1],
-                mcp._mcp_server.create_initialization_options(),
-            )
 
-    app = Starlette(routes=[
+@contextlib.asynccontextmanager
+async def lifespan(app):
+    async with session_manager.run():
+        yield
+
+
+async def handle_mcp(scope, receive, send):
+    await session_manager.handle_request(scope, receive, send)
+
+
+app = Starlette(
+    lifespan=lifespan,
+    routes=[
         Route("/health", endpoint=health),
-        Route("/sse", endpoint=handle_sse),
-        Mount("/messages/", app=sse.handle_post_message),
-    ])
-
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
-
+        Mount("/mcp", app=handle_mcp),
+    ],
+)
 
 if __name__ == "__main__":
-    asyncio.run(serve())
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

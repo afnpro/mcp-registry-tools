@@ -1,0 +1,45 @@
+# PoC OAuth2 providers — GitHub only.
+# All other providers are disabled to avoid broken login buttons.
+#
+# Prerequisites:
+#   1. Go to https://github.com/settings/developers → OAuth Apps → New OAuth App
+#   2. Application name: MCP Registry PoC
+#   3. Homepage URL: http://localhost:7860
+#   4. Authorization callback URL: http://localhost:8888/oauth2/callback/github
+#      ↑ IMPORTANT: must be port 8888 (auth-server), NOT 7860 (gateway)
+#   5. Register → copy Client ID and generate Client Secret
+#   6. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in your .env file
+
+providers:
+  github:
+    display_name: "GitHub"
+    client_id: "${GITHUB_CLIENT_ID}"
+    client_secret: "${GITHUB_CLIENT_SECRET}"
+    auth_url: "https://github.com/login/oauth/authorize"
+    token_url: "https://github.com/login/oauth/access_token"
+    user_info_url: "https://api.github.com/user"
+    scopes: ["read:user", "user:email"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    username_claim: "login"
+    # GitHub doesn't provide IdP groups. We use the "type" claim which GitHub
+    # always returns as "User" for any authenticated account. The scopes_poc.yml
+    # maps "User" → mcp-servers-unrestricted/read+execute so all logged-in
+    # GitHub users get full admin access to the PoC registry.
+    groups_claim: "type"
+    email_claim: "email"
+    name_claim: "name"
+    enabled: "${GITHUB_ENABLED}"
+
+session:
+  max_age_seconds: 28800
+  cookie_name: "mcp_oauth_session"
+  secure: false        # false for localhost HTTP
+  httponly: true
+  samesite: "lax"
+  domain: ""
+
+registry:
+  callback_url: "${REGISTRY_URL}/api/auth/auth/callback"
+  success_redirect: "${REGISTRY_URL}/"
+  error_redirect: "${REGISTRY_URL}/login"

@@ -22,6 +22,45 @@ services:
   # M4: DEPLOYMENT_MODE=registry-only is valid — skips nginx config generation
   # M6: model path inside container is /app/registry/models/<name>
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # auth-server — OAuth2 gateway for the React web UI login
+  # Built from source (Dockerfile.auth-poc — python:3.11-slim, pip/uv only)
+  # Provides GitHub OAuth login for the React dashboard at http://localhost:7860/
+  #
+  # Prerequisites (one-time setup):
+  #   1. github.com/settings/developers → OAuth Apps → New OAuth App
+  #   2. Homepage URL: http://localhost:7860
+  #   3. Authorization callback URL: http://localhost:8888/oauth2/callback/github
+  #      ↑ port 8888 (auth-server), NOT 7860
+  #   4. Copy Client ID → GITHUB_CLIENT_ID in .env
+  #   5. Generate Client Secret → GITHUB_CLIENT_SECRET in .env
+  #   6. Set GITHUB_ENABLED=true in .env
+  # ─────────────────────────────────────────────────────────────────────────
+  auth-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.auth-poc
+    container_name: auth-server
+    restart: unless-stopped
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - GITHUB_ENABLED=${GITHUB_ENABLED:-false}
+      - REGISTRY_URL=${REGISTRY_URL:-http://localhost:7860}
+      - SESSION_COOKIE_SECURE=false
+    ports:
+      - "8888:8888"
+    networks:
+      - mcp-net
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8888/health').read()"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   mcp-gateway:
     build:
       context: .
@@ -30,7 +69,10 @@ services:
     restart: unless-stopped
     environment:
       - SECRET_KEY=${SECRET_KEY}
-      - AUTH_PROVIDER=${AUTH_PROVIDER:-static}
+      # AUTH_PROVIDER is intentionally absent: the gateway runs without an IdP.
+      # All API access uses X-Auth-Method: network-trusted headers (same as sync-worker).
+      # AUTH_SERVER_URL points auth-server so the React UI can call /api/auth/providers.
+      - AUTH_SERVER_URL=http://auth-server:8888
       - STORAGE_BACKEND=${STORAGE_BACKEND:-file}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
       - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-registry-only}

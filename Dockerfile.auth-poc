@@ -1,0 +1,55 @@
+# CONSTRAINT: Docker Hub official image only — no apt, no ghcr.io
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# CONSTRAINT: pip/uv only
+RUN pip install --no-cache-dir uv
+
+# The auth_server imports from the main registry package at runtime.
+# Copy the full gateway source so those imports resolve.
+COPY mcp-gateway-registry/ .
+
+# Strip the git-based dep (same as Dockerfile.gateway)
+RUN sed -i '/cisco-ai-a2a-scanner @ git+/d' pyproject.toml
+
+# Skip heavy/optional deps not needed for PoC OAuth2 flow (MongoDB, OpenSearch, boto3)
+# Install all auth_server deps from its own pyproject.toml.
+# boto3/motor/pymongo/opensearch-py are imported at module level so must be present
+# even though Cognito/MongoDB features are unused in this PoC.
+RUN uv pip install --system --no-cache \
+    "fastapi>=0.115.0" \
+    "uvicorn[standard]>=0.34.0" \
+    "pydantic>=2.0.0" \
+    "pydantic-settings>=2.0.0" \
+    "requests>=2.28.0" \
+    "python-jose>=3.3.0" \
+    "python-dotenv>=1.0.0" \
+    "pyjwt>=2.6.0" \
+    "cryptography>=40.0.0" \
+    "pyyaml>=6.0.0" \
+    "httpx>=0.25.0" \
+    "itsdangerous>=2.1.0" \
+    "aiohttp>=3.8.0" \
+    "aiofiles>=24.1.0" \
+    "boto3>=1.28.0" \
+    "motor>=3.3.0" \
+    "pymongo>=4.6.0" \
+    "opensearch-py>=2.4.0"
+
+# Override the bundled oauth2_providers.yml with the PoC-specific version
+# (GitHub-only, no Okta/Keycloak/Cognito to avoid broken login buttons)
+COPY auth_server_providers_poc.yml ./auth_server/oauth2_providers.yml
+
+# Install the full gateway package so auth_server registry.* imports resolve
+RUN uv pip install --system --no-cache -e .
+
+WORKDIR /app/auth_server
+
+EXPOSE 8888
+
+# CONSTRAINT: Python urllib healthcheck — no curl
+HEALTHCHECK --interval=20s --timeout=5s --retries=5 --start-period=30s \
+  CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8888/health').read()" || exit 1
+
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8888"]
